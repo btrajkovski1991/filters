@@ -20,6 +20,9 @@ const shopify = shopifyApp({
 
 export default shopify;
 
+// ✅ ADD THIS LINE
+export const authenticate = shopify.authenticate;
+
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 
 // ---- Storefront helper ----
