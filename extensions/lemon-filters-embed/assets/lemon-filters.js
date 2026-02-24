@@ -1,3 +1,8 @@
+// lemon-filters.js (FULL UPDATED)
+
+// -----------------------------
+// Basics / helpers
+// -----------------------------
 function getResultsList() {
   return document.querySelector("results-list");
 }
@@ -20,6 +25,7 @@ function setLoading(isLoading) {
 }
 
 setLoading(false);
+
 const rl = getResultsList();
 const sectionId = getSectionIdFromResultsList(rl);
 
@@ -188,7 +194,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
     const currentValue = selectEl.value;
 
     // keep first option ("All"), then rebuild unique list
-    const keepFirst = selectEl.options[0] ? selectEl.options[0].cloneNode(true) : null;
+    const keepFirst = selectEl.options[0]
+      ? selectEl.options[0].cloneNode(true)
+      : null;
     selectEl.innerHTML = "";
     if (keepFirst) selectEl.appendChild(keepFirst);
 
@@ -206,7 +214,10 @@ console.log("[LemonFilters] sectionId:", sectionId);
       });
 
     // restore selection if still present
-    if (currentValue && Array.from(selectEl.options).some((o) => o.value === currentValue)) {
+    if (
+      currentValue &&
+      Array.from(selectEl.options).some((o) => o.value === currentValue)
+    ) {
       selectEl.value = currentValue;
     } else {
       selectEl.value = "";
@@ -241,7 +252,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
     const pretty = buildPrettyUrlParams();
     url.search = pretty.toString() ? `?${pretty.toString()}` : "";
 
-    if (mode === "push") history.pushState({ lemonFilters: true }, "", url.toString());
+    if (mode === "push")
+      history.pushState({ lemonFilters: true }, "", url.toString());
     else history.replaceState({ lemonFilters: true }, "", url.toString());
   }
 
@@ -295,23 +307,71 @@ console.log("[LemonFilters] sectionId:", sectionId);
     return m ? m[1] : null;
   }
 
+  // -----------------------------
+  // NEW: Robust response parsing
+  // -----------------------------
+  function getHandlesFromResponse(data) {
+    const candidates = [
+      data?.filteredHandles,
+      data?.handles,
+      data?.productHandles,
+      data?.products,
+      data?.data?.handles,
+    ];
+
+    for (const c of candidates) {
+      if (Array.isArray(c)) return c;
+    }
+
+    const nodes =
+      data?.products?.nodes ||
+      data?.data?.products?.nodes ||
+      data?.products ||
+      data?.data?.products;
+
+    if (Array.isArray(nodes) && nodes.length && typeof nodes[0] === "object") {
+      const h = nodes.map((p) => p?.handle).filter(Boolean);
+      if (h.length) return h;
+    }
+
+    return [];
+  }
+
   async function fetchFilteredHandles() {
-    const res = await fetch(`/apps/filter/products?${buildFilterQuery()}`, {
-      credentials: "include",
+    // Use absolute URL + same-origin credentials (best for Shopify storefront)
+    const url = new URL("/apps/filter/products", window.location.origin);
+
+    const qs = new URLSearchParams(buildFilterQuery());
+    for (const [k, v] of qs.entries()) url.searchParams.set(k, v);
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
 
-    const text = await res.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      throw new Error("Non-JSON response from /apps/filter/products");
+    const contentType = res.headers.get("content-type") || "";
+    const raw = await res.text();
+
+    if (!contentType.includes("application/json")) {
+      throw new Error(
+        `Non-JSON response from /apps/filter/products (content-type: ${contentType})`
+      );
     }
 
-    if (!res.ok || data.ok === false) {
-      throw new Error(data.message || data.error || `HTTP ${res.status}`);
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error("Invalid JSON from /apps/filter/products");
     }
+
+    if (!res.ok || data?.ok === false) {
+      throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+    }
+
+    // Debug payload
+    console.log("[LemonFilters] proxy response keys:", Object.keys(data || {}));
 
     return data;
   }
@@ -360,7 +420,7 @@ console.log("[LemonFilters] sectionId:", sectionId);
     window.dispatchEvent(new Event("resize"));
   }
 
-  // ✅ NEW: accept both response formats:
+  // ✅ Accept both response formats:
   // - V1: { vendors, colors, sizes, tags, types }
   // - V2: { facets: { vendors, colors, sizes, tags, types } }
   function hydrateOptionsFromResponse(data) {
@@ -378,7 +438,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
     setSelectOptions(tagSelect, tags);
     setSelectOptions(typeSelect, types);
 
-    // Helpful debug
     console.log("[LemonFilters] hydrate facets:", {
       vendors: Array.isArray(vendors) ? vendors.length : 0,
       colors: Array.isArray(colors) ? colors.length : 0,
@@ -395,7 +454,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
   async function applyFilters({ urlMode = "replace" } = {}) {
     const reqId = ++inFlight;
+
     root.classList.add("is-loading");
+    setLoading(true);
     syncUrl({ mode: urlMode });
 
     try {
@@ -404,13 +465,16 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
       hydrateOptionsFromResponse(data);
 
-      const handles = Array.isArray(data.filteredHandles) ? data.filteredHandles : [];
+      const handles = getHandlesFromResponse(data);
+      console.log("[LemonFilters] handles count:", handles.length);
+
       filterExistingGrid(new Set(handles));
     } catch (e) {
-      console.error("[LemonFilters]", e);
+      console.error("[LemonFilters] applyFilters failed:", e);
       alert("Filters failed. Check DevTools > Console and Network.");
     } finally {
       root.classList.remove("is-loading");
+      setLoading(false);
     }
   }
 
@@ -427,9 +491,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
   tagSelect?.addEventListener("change", onChangeAutoApply);
   typeSelect?.addEventListener("change", onChangeAutoApply);
 
-  applyBtn.addEventListener("click", () => applyFilters({ urlMode: "push" }));
+  applyBtn?.addEventListener("click", () => applyFilters({ urlMode: "push" }));
 
-  clearBtn.addEventListener("click", () => {
+  clearBtn?.addEventListener("click", () => {
     resetSelectToAll(colorSelect);
     resetSelectToAll(sizeSelect);
     resetSelectToAll(vendorSelect);
@@ -456,7 +520,11 @@ console.log("[LemonFilters] sectionId:", sectionId);
   applyFilters({ urlMode: "replace" });
 
   // If Horizon re-renders the list, re-apply filters automatically
-  const observer = new MutationObserver(() => {
+  // Guard against loops: only re-run if childList mutations happen
+  const observer = new MutationObserver((mutations) => {
+    const hasChildListChange = mutations.some((m) => m.type === "childList");
+    if (!hasChildListChange) return;
+
     clearTimeout(observer.__t);
     observer.__t = setTimeout(() => {
       applyFilters({ urlMode: "replace" });
