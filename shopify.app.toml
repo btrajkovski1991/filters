@@ -1,6 +1,6 @@
 client_id = "a4a15b8d862a65cbf70213e5fa42c652"
 name = "lemon-filters"
-application_url = "https://example.com"
+application_url = "https://filters-7bck.onrender.com"
 embedded = true
 
 [build]
@@ -11,11 +11,11 @@ api_version = "2026-04"
 
   [[webhooks.subscriptions]]
   topics = [ "app/scopes_update" ]
-  uri = "https://example.com/webhooks/app/scopes_update"
+  uri = "https://filters-7bck.onrender.com/webhooks/app/scopes_update"
 
   [[webhooks.subscriptions]]
   topics = [ "app/uninstalled" ]
-  uri = "https://example.com/webhooks/app/uninstalled"
+  uri = "https://filters-7bck.onrender.com/webhooks/app/uninstalled"
 
 [access_scopes]
 scopes = "read_products,read_product_listings,write_themes,read_themes,unauthenticated_read_product_listings"
@@ -24,11 +24,12 @@ use_legacy_install_flow = false
 
 [auth]
 redirect_urls = [
-  "https://inline-tournaments-assessment-rip.trycloudflare.com/api/auth",
-  "https://inline-tournaments-assessment-rip.trycloudflare.com/api/auth/callback"
+  "https://filters-7bck.onrender.com/api/auth",
+  "https://filters-7bck.onrender.com/api/auth/callback"
 ]
 
 [app_proxy]
-url = "https://inline-tournaments-assessment-rip.trycloudflare.com/proxy"
+# IMPORTANT: this must be ROOT domain (no /proxy, no /apps/filter)
+url = "https://filters-7bck.onrender.com"
 subpath = "filter"
 prefix = "apps"
