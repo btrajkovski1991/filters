@@ -1,91 +1,64 @@
 import { unauthenticatedStorefront } from "~/shopify.server";
 
-// If you prefer Remix json() you can, but Response.json is OK.
-
 export async function loader({ request }: { request: Request }) {
   try {
     const url = new URL(request.url);
 
-    // ------------------------------------------------------------
-    // 1) Ignore Shopify/theme section params that may be appended
-    // ------------------------------------------------------------
+    // ignore theme hydration noise
     url.searchParams.delete("section_id");
     url.searchParams.delete("sections");
     url.searchParams.delete("path");
 
-    // ------------------------------------------------------------
-    // 2) Required params
-    // ------------------------------------------------------------
     const collectionHandle = url.searchParams.get("collectionHandle");
     if (!collectionHandle) {
-      return Response.json(
-        { ok: false, message: "Missing collectionHandle" },
-        { status: 400 }
-      );
+      return Response.json({ ok: false, message: "Missing collectionHandle" }, { status: 400 });
     }
 
-    // Proxy usually passes ?shop=... but keep env fallback
-    let shopDomain =
-      url.searchParams.get("shop") ||
-      process.env.SHOPIFY_STORE_DOMAIN ||
-      "";
+    // ✅ BEST: shop domain from proxy header (available on forwarded request)
+    // Shopify commonly provides this header on proxy requests:
+    const headerShop =
+      request.headers.get("x-shopify-shop-domain") ||
+      request.headers.get("X-Shopify-Shop-Domain");
+
+    // fallback: query param or env
+    const shopDomain =
+      (headerShop || url.searchParams.get("shop") || process.env.SHOPIFY_STORE_DOMAIN || "")
+        .replace(/^https?:\/\//i, "")
+        .replace(/\/.*$/, "")
+        .trim();
 
     if (!shopDomain) {
       return Response.json(
-        { ok: false, message: "Missing shop domain" },
+        { ok: false, message: "Missing shop domain (no header, no env SHOPIFY_STORE_DOMAIN)" },
         { status: 400 }
       );
     }
 
-    // Normalize shop domain (remove protocol if present)
-    shopDomain = shopDomain
-      .replace(/^https?:\/\//i, "")
-      .replace(/\/.*$/, "")
-      .trim();
+    const storefront = unauthenticatedStorefront(shopDomain);
 
-    // ------------------------------------------------------------
-    // 3) Filters
-    // ------------------------------------------------------------
+    // ---- filters
     const vendor = url.searchParams.get("vendor");
     const tag = url.searchParams.get("tag");
     const type = url.searchParams.get("type");
     const color = url.searchParams.get("color");
     const size = url.searchParams.get("size");
-    const minPriceRaw = url.searchParams.get("minPrice");
-    const maxPriceRaw = url.searchParams.get("maxPrice");
+    const minPrice = url.searchParams.get("minPrice");
+    const maxPrice = url.searchParams.get("maxPrice");
 
-    // Safe numeric parsing (avoid NaN in Storefront search)
-    const minPrice =
-      minPriceRaw != null && minPriceRaw !== ""
-        ? Number(minPriceRaw)
-        : null;
-    const maxPrice =
-      maxPriceRaw != null && maxPriceRaw !== ""
-        ? Number(maxPriceRaw)
-        : null;
-
-    // Storefront search query supports:
-    // vendor:, product_type:, tag:, price:>=, price:<=
     const terms: string[] = [];
-
     if (vendor) terms.push(`vendor:${escapeQuery(vendor)}`);
     if (type) terms.push(`product_type:${escapeQuery(type)}`);
     if (tag) terms.push(`tag:${escapeQuery(tag)}`);
 
-    if (minPrice != null && Number.isFinite(minPrice))
-      terms.push(`price:>=${minPrice}`);
-    if (maxPrice != null && Number.isFinite(maxPrice))
-      terms.push(`price:<=${maxPrice}`);
+    const minN = minPrice !== null && minPrice !== "" ? Number(minPrice) : null;
+    const maxN = maxPrice !== null && maxPrice !== "" ? Number(maxPrice) : null;
+    if (minN != null && Number.isFinite(minN)) terms.push(`price:>=${minN}`);
+    if (maxN != null && Number.isFinite(maxN)) terms.push(`price:<=${maxN}`);
 
     const query = terms.length ? terms.join(" ") : null;
 
-    const storefront = unauthenticatedStorefront(shopDomain);
-
-    // ------------------------------------------------------------
-    // 4) Fetch products
-    // ------------------------------------------------------------
+    // ✅ IMPORTANT: /collections/all is not a real collection handle in APIs
     let products: any[] = [];
-
     if (collectionHandle === "all") {
       const data = await storefront.query(ALL_PRODUCTS_QUERY, {
         variables: { first: 250, query },
@@ -98,9 +71,7 @@ export async function loader({ request }: { request: Request }) {
       products = data?.collection?.products?.nodes ?? [];
     }
 
-    // ------------------------------------------------------------
-    // 5) Build facets + filtered handles
-    // ------------------------------------------------------------
+    // ---- facets + handles (your existing logic)
     const vendorsSet = new Set<string>();
     const tagsSet = new Set<string>();
     const typesSet = new Set<string>();
@@ -119,11 +90,8 @@ export async function loader({ request }: { request: Request }) {
       if (p.productType) typesSet.add(String(p.productType));
       if (Array.isArray(p.tags)) p.tags.forEach((t: any) => tagsSet.add(String(t)));
 
-      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options)
-        ? p.options
-        : [];
+      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options) ? p.options : [];
 
-      // collect facet values
       for (const opt of options) {
         const n = normalize(opt?.name);
         const vals = Array.isArray(opt?.values) ? opt.values : [];
@@ -131,12 +99,11 @@ export async function loader({ request }: { request: Request }) {
         if (n === "size") vals.forEach((v) => sizesSet.add(String(v)));
       }
 
-      // filter by color/size (done locally)
       let match = true;
       if (wantedColor) match = match && hasOptionValue(options, ["color", "colour"], wantedColor);
       if (wantedSize) match = match && hasOptionValue(options, ["size"], wantedSize);
 
-      if (match && p.handle) filteredHandles.push(p.handle);
+      if (match) filteredHandles.push(p.handle);
     }
 
     const facets = {
@@ -154,45 +121,31 @@ export async function loader({ request }: { request: Request }) {
         shop: shopDomain,
         collectionHandle,
         facets,
-
-        // legacy keys (client supports both)
         vendors: facets.vendors,
         colors: facets.colors,
         sizes: facets.sizes,
         tags: facets.tags,
         types: facets.types,
-
         filteredHandles,
       },
-      {
-        headers: {
-          "Cache-Control": "no-store",
-        },
-      }
+      { headers: { "Cache-Control": "no-store" } }
     );
   } catch (err: any) {
-    // IMPORTANT: Storefront API errors commonly throw => avoid crashing into 500 w/ HTML
+    // ✅ ALWAYS return JSON (prevents HTML error pages)
     console.error("[apps.filter.products] error:", err);
-
     return Response.json(
-      {
-        ok: false,
-        message: err?.message || "Proxy loader failed",
-      },
+      { ok: false, marker: "FILTER_HANDLES_ERROR_V3", message: err?.message || String(err) },
       { status: 500 }
     );
   }
 }
 
-// ------------------ helpers ------------------
+// helpers (same as yours)
 function normalize(v: any) {
   return (v ?? "").toString().trim().toLowerCase();
 }
 function sortAlpha(arr: string[]) {
-  return arr
-    .map((x) => String(x ?? "").trim())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
+  return arr.map((x) => String(x ?? "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 function escapeQuery(v: string) {
   const s = String(v).trim();
@@ -214,7 +167,7 @@ function hasOptionValue(
   return false;
 }
 
-// ------------------ GraphQL ------------------
+// GraphQL
 const PRODUCT_FIELDS = `
   handle
   vendor
