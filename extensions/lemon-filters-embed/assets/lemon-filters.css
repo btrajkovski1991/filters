@@ -1,0 +1,71 @@
+/* Hide grid until Lemon replaces it (prevents FOUC) */
+html.lemon-filter-loading results-list {
+  opacity: 0;
+  pointer-events: none;
+}
+
+html.lemon-filter-ready results-list {
+  opacity: 1;
+  pointer-events: auto;
+  transition: opacity 140ms ease;
+}
+
+
+.lemon-filters-layout {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.lemon-filters {
+  width: 260px;
+  position: sticky;
+  top: 16px;
+}
+
+.lemon-filters__group {
+  margin-bottom: 12px;
+}
+
+.lemon-filters__label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 6px;
+}
+
+.lemon-filters__select,
+.lemon-filters__input {
+  width: 100%;
+  padding: 8px 10px;
+  box-sizing: border-box;
+}
+
+.lemon-filters__price {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.lemon-filters__button {
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.lemon-filters__button--secondary {
+  width: 100%;
+}
+
+@media (max-width: 990px) {
+  .lemon-filters-layout {
+    flex-direction: column;
+  }
+  .lemon-filters {
+    width: 100%;
+    position: static;
+  }
+  .lemon-filters__price {
+    grid-template-columns: 1fr 1fr;
+  }
+}

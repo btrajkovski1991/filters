@@ -1,0 +1,33 @@
+{% comment %}
+  Lemon Filters - App Embed
+  Loads JS globally but activates only on collection pages.
+{% endcomment %}
+
+<script>
+  // Run ASAP to reduce FOUC (embed is in body, so it's "best effort")
+  document.documentElement.classList.add('lemon-filter-loading');
+
+  window.LemonFilters = window.LemonFilters || {};
+  window.LemonFilters.shop = {{ shop.permanent_domain | json }};
+  window.LemonFilters.moneyFormat = {{ shop.money_format | json }};
+</script>
+
+<div id="lemon-filters-root" data-lemon-filters></div>
+
+{{ 'lemon-filters.css' | asset_url | stylesheet_tag }}
+<script src="{{ 'lemon-filters.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Lemon Product Filters",
+  "target": "body",
+  "settings": [
+    {
+      "type": "checkbox",
+      "id": "enable_filters",
+      "label": "Enable filters on collection pages",
+      "default": true
+    }
+  ]
+}
+{% endschema %}
