@@ -1,5 +1,6 @@
 import "@shopify/shopify-app-remix/server/adapters/node";
 import { ApiVersion, shopifyApp } from "@shopify/shopify-app-remix/server";
+import type { LoginError } from "@shopify/shopify-app-remix/server";
 import { MemorySessionStorage } from "@shopify/shopify-app-session-storage-memory";
 import { createStorefrontApiClient } from "@shopify/storefront-api-client";
 
@@ -13,17 +14,22 @@ const shopify = shopifyApp({
     .filter(Boolean),
   apiVersion: ApiVersion.January25,
 
-  // ✅ For now (sessions reset on restart). Later switch to Prisma/Postgres.
+  // ✅ OK for now (but resets on restart)
   sessionStorage: new MemorySessionStorage(),
 });
 
 export default shopify;
 
-// ✅ Needed by your routes
+// ✅ Used by many routes
 export const authenticate = shopify.authenticate;
 
-// ✅ Used by entry/root in many templates
+// ✅ Used by root/entry templates
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
+
+// ✅ Used by auth.login route
+export async function login(request: Request): Promise<LoginError> {
+  return shopify.login(request);
+}
 
 // ---- helpers ----
 function normalizeShopDomain(input: string) {
@@ -35,7 +41,7 @@ function normalizeShopDomain(input: string) {
   return s.replace(/^\/+|\/+$/g, "");
 }
 
-// ---- Storefront helper (authenticated via token you pass in) ----
+// ---- Storefront helper (token passed in) ----
 export function shopifyStorefront(shopDomain: string, accessToken: string) {
   const domain = normalizeShopDomain(shopDomain);
   if (!domain) throw new Error("Missing shop domain");
@@ -48,10 +54,7 @@ export function shopifyStorefront(shopDomain: string, accessToken: string) {
   });
 }
 
-/**
- * ✅ Some routes expect `unauthenticatedStorefront.storefront({ shop })`
- * This uses env SHOPIFY_STOREFRONT_TOKEN.
- */
+// ✅ Some routes expect this export
 export const unauthenticatedStorefront = {
   storefront: ({ shop }: { shop: string }) => {
     const domain = normalizeShopDomain(shop);
