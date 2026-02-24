@@ -41,6 +41,12 @@ function normalizeShopDomain(input: string) {
   return s.replace(/^\/+|\/+$/g, "");
 }
 
+function getStorefrontToken() {
+  const token = process.env.SHOPIFY_STOREFRONT_TOKEN;
+  if (!token) throw new Error("Missing SHOPIFY_STOREFRONT_TOKEN");
+  return token;
+}
+
 // ---- Storefront helper (token passed in) ----
 export function shopifyStorefront(shopDomain: string, accessToken: string) {
   const domain = normalizeShopDomain(shopDomain);
@@ -54,19 +60,28 @@ export function shopifyStorefront(shopDomain: string, accessToken: string) {
   });
 }
 
-// ✅ Some routes expect this export
+// ✅ Back-compat export some routes may expect (object form)
 export const unauthenticatedStorefront = {
   storefront: ({ shop }: { shop: string }) => {
     const domain = normalizeShopDomain(shop);
     if (!domain) throw new Error("Missing shop domain");
 
-    const token = process.env.SHOPIFY_STOREFRONT_TOKEN;
-    if (!token) throw new Error("Missing SHOPIFY_STOREFRONT_TOKEN");
-
     return createStorefrontApiClient({
       storeDomain: domain,
-      publicAccessToken: token,
+      publicAccessToken: getStorefrontToken(),
       apiVersion: process.env.SHOPIFY_STOREFRONT_API_VERSION || "2025-01",
     });
   },
 };
+
+// ✅ NEW: easy function form (so routes can do unauthenticatedStorefrontClient(shopDomain))
+export function unauthenticatedStorefrontClient(shopDomain: string) {
+  const domain = normalizeShopDomain(shopDomain);
+  if (!domain) throw new Error("Missing shop domain");
+
+  return createStorefrontApiClient({
+    storeDomain: domain,
+    publicAccessToken: getStorefrontToken(),
+    apiVersion: process.env.SHOPIFY_STOREFRONT_API_VERSION || "2025-01",
+  });
+}
