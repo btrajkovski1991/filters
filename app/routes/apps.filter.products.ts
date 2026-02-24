@@ -1,4 +1,41 @@
-import { shopify } from "~/shopify.server";
+// app/routes/apps.filter.products.ts
+import { unauthenticatedStorefrontClient } from "~/shopify.server";
+
+function okJson(data: any) {
+  // ✅ Always 200 so Shopify App Proxy doesn't replace body with HTML on errors
+  return new Response(JSON.stringify(data, null, 2), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+function normalizeShopDomain(input: string) {
+  const s = (input || "").trim();
+  if (!s) return "";
+  try {
+    if (s.startsWith("http://") || s.startsWith("https://")) return new URL(s).host;
+  } catch {}
+  return s.replace(/^\/+|\/+$/g, "");
+}
+
+function inferShopDomain(request: Request, url: URL) {
+  // Try headers first
+  const headerShop =
+    request.headers.get("x-shopify-shop-domain") ||
+    request.headers.get("X-Shopify-Shop-Domain");
+
+  // Then query param
+  const qpShop = url.searchParams.get("shop");
+
+  // Then env fallback (best for direct Render testing)
+  const envShop = process.env.SHOPIFY_STORE_DOMAIN;
+
+  const candidate = headerShop || qpShop || envShop || "";
+  return normalizeShopDomain(candidate);
+}
 
 export async function loader({ request }: { request: Request }) {
   try {
@@ -11,30 +48,20 @@ export async function loader({ request }: { request: Request }) {
 
     const collectionHandle = url.searchParams.get("collectionHandle");
     if (!collectionHandle) {
-      return Response.json({ ok: false, message: "Missing collectionHandle" }, { status: 400 });
+      return okJson({ ok: false, message: "Missing collectionHandle" });
     }
 
-    // ✅ BEST: shop domain from proxy header (available on forwarded request)
-    // Shopify commonly provides this header on proxy requests:
-    const headerShop =
-      request.headers.get("x-shopify-shop-domain") ||
-      request.headers.get("X-Shopify-Shop-Domain");
-
-    // fallback: query param or env
-    const shopDomain =
-      (headerShop || url.searchParams.get("shop") || process.env.SHOPIFY_STORE_DOMAIN || "")
-        .replace(/^https?:\/\//i, "")
-        .replace(/\/.*$/, "")
-        .trim();
-
+    const shopDomain = inferShopDomain(request, url);
     if (!shopDomain) {
-      return Response.json(
-        { ok: false, message: "Missing shop domain (no header, no env SHOPIFY_STORE_DOMAIN)" },
-        { status: 400 }
-      );
+      return okJson({
+        ok: false,
+        message:
+          "Missing shop domain (no X-Shopify-Shop-Domain header, no ?shop=, and no SHOPIFY_STORE_DOMAIN env)",
+      });
     }
 
-    const storefront = shopify.unauthenticated.storefront(shopDomain);
+    // ✅ Option 2: use your new helper from shopify.server.ts
+    const storefront = unauthenticatedStorefrontClient(shopDomain);
 
     // ---- filters
     const vendor = url.searchParams.get("vendor");
@@ -71,7 +98,7 @@ export async function loader({ request }: { request: Request }) {
       products = data?.collection?.products?.nodes ?? [];
     }
 
-    // ---- facets + handles (your existing logic)
+    // ---- facets + handles
     const vendorsSet = new Set<string>();
     const tagsSet = new Set<string>();
     const typesSet = new Set<string>();
@@ -90,7 +117,9 @@ export async function loader({ request }: { request: Request }) {
       if (p.productType) typesSet.add(String(p.productType));
       if (Array.isArray(p.tags)) p.tags.forEach((t: any) => tagsSet.add(String(t)));
 
-      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options) ? p.options : [];
+      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options)
+        ? p.options
+        : [];
 
       for (const opt of options) {
         const n = normalize(opt?.name);
@@ -114,38 +143,43 @@ export async function loader({ request }: { request: Request }) {
       sizes: sortAlpha([...sizesSet]),
     };
 
-    return Response.json(
-      {
-        ok: true,
-        marker: "FILTER_HANDLES_OK_V3",
-        shop: shopDomain,
-        collectionHandle,
-        facets,
-        vendors: facets.vendors,
-        colors: facets.colors,
-        sizes: facets.sizes,
-        tags: facets.tags,
-        types: facets.types,
-        filteredHandles,
-      },
-      { headers: { "Cache-Control": "no-store" } }
-    );
+    return okJson({
+      ok: true,
+      marker: "FILTER_HANDLES_OK_V4",
+      shop: shopDomain,
+      collectionHandle,
+      facets,
+
+      // legacy keys
+      vendors: facets.vendors,
+      colors: facets.colors,
+      sizes: facets.sizes,
+      tags: facets.tags,
+      types: facets.types,
+
+      filteredHandles,
+    });
   } catch (err: any) {
-    // ✅ ALWAYS return JSON (prevents HTML error pages)
     console.error("[apps.filter.products] error:", err);
-    return Response.json(
-      { ok: false, marker: "FILTER_HANDLES_ERROR_V3", message: err?.message || String(err) },
-      { status: 500 }
-    );
+
+    // ✅ always 200 JSON
+    return okJson({
+      ok: false,
+      marker: "FILTER_HANDLES_ERROR_V4",
+      message: err?.message || String(err),
+    });
   }
 }
 
-// helpers (same as yours)
+// helpers
 function normalize(v: any) {
   return (v ?? "").toString().trim().toLowerCase();
 }
 function sortAlpha(arr: string[]) {
-  return arr.map((x) => String(x ?? "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return arr
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 }
 function escapeQuery(v: string) {
   const s = String(v).trim();
