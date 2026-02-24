@@ -1,5 +1,15 @@
 import { unauthenticatedStorefront } from "~/shopify.server";
 
+function okJson(data: any) {
+  return new Response(JSON.stringify(data, null, 2), {
+    status: 200, // ✅ always 200 for app proxy
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
 export async function loader({ request }: { request: Request }) {
   try {
     const url = new URL(request.url);
@@ -11,27 +21,28 @@ export async function loader({ request }: { request: Request }) {
 
     const collectionHandle = url.searchParams.get("collectionHandle");
     if (!collectionHandle) {
-      return Response.json({ ok: false, message: "Missing collectionHandle" }, { status: 400 });
+      return okJson({ ok: false, message: "Missing collectionHandle" });
     }
 
-    // ✅ BEST: shop domain from proxy header (available on forwarded request)
-    // Shopify commonly provides this header on proxy requests:
+    // ✅ get shop domain from proxy header
     const headerShop =
       request.headers.get("x-shopify-shop-domain") ||
       request.headers.get("X-Shopify-Shop-Domain");
 
-    // fallback: query param or env
-    const shopDomain =
-      (headerShop || url.searchParams.get("shop") || process.env.SHOPIFY_STORE_DOMAIN || "")
-        .replace(/^https?:\/\//i, "")
-        .replace(/\/.*$/, "")
-        .trim();
+    const shopDomain = (headerShop ||
+      url.searchParams.get("shop") ||
+      process.env.SHOPIFY_STORE_DOMAIN ||
+      "")
+      .replace(/^https?:\/\//i, "")
+      .replace(/\/.*$/, "")
+      .trim();
 
     if (!shopDomain) {
-      return Response.json(
-        { ok: false, message: "Missing shop domain (no header, no env SHOPIFY_STORE_DOMAIN)" },
-        { status: 400 }
-      );
+      return okJson({
+        ok: false,
+        message:
+          "Missing shop domain (no X-Shopify-Shop-Domain header and no SHOPIFY_STORE_DOMAIN env)",
+      });
     }
 
     const storefront = unauthenticatedStorefront(shopDomain);
@@ -71,7 +82,7 @@ export async function loader({ request }: { request: Request }) {
       products = data?.collection?.products?.nodes ?? [];
     }
 
-    // ---- facets + handles (your existing logic)
+    // ---- facets + handles
     const vendorsSet = new Set<string>();
     const tagsSet = new Set<string>();
     const typesSet = new Set<string>();
@@ -90,7 +101,9 @@ export async function loader({ request }: { request: Request }) {
       if (p.productType) typesSet.add(String(p.productType));
       if (Array.isArray(p.tags)) p.tags.forEach((t: any) => tagsSet.add(String(t)));
 
-      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options) ? p.options : [];
+      const options: Array<{ name: string; values: string[] }> = Array.isArray(p.options)
+        ? p.options
+        : [];
 
       for (const opt of options) {
         const n = normalize(opt?.name);
@@ -114,38 +127,40 @@ export async function loader({ request }: { request: Request }) {
       sizes: sortAlpha([...sizesSet]),
     };
 
-    return Response.json(
-      {
-        ok: true,
-        marker: "FILTER_HANDLES_OK_V3",
-        shop: shopDomain,
-        collectionHandle,
-        facets,
-        vendors: facets.vendors,
-        colors: facets.colors,
-        sizes: facets.sizes,
-        tags: facets.tags,
-        types: facets.types,
-        filteredHandles,
-      },
-      { headers: { "Cache-Control": "no-store" } }
-    );
+    return okJson({
+      ok: true,
+      marker: "FILTER_HANDLES_OK_V3",
+      shop: shopDomain,
+      collectionHandle,
+      facets,
+      vendors: facets.vendors,
+      colors: facets.colors,
+      sizes: facets.sizes,
+      tags: facets.tags,
+      types: facets.types,
+      filteredHandles,
+    });
   } catch (err: any) {
-    // ✅ ALWAYS return JSON (prevents HTML error pages)
     console.error("[apps.filter.products] error:", err);
-    return Response.json(
-      { ok: false, marker: "FILTER_HANDLES_ERROR_V3", message: err?.message || String(err) },
-      { status: 500 }
-    );
+
+    // ✅ always return 200 JSON (Shopify won’t swap to HTML)
+    return okJson({
+      ok: false,
+      marker: "FILTER_HANDLES_ERROR_V3",
+      message: err?.message || String(err),
+    });
   }
 }
 
-// helpers (same as yours)
+// helpers
 function normalize(v: any) {
   return (v ?? "").toString().trim().toLowerCase();
 }
 function sortAlpha(arr: string[]) {
-  return arr.map((x) => String(x ?? "").trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  return arr
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 }
 function escapeQuery(v: string) {
   const s = String(v).trim();
