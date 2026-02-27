@@ -495,6 +495,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
       const handles = getHandlesFromResponse(data);
       console.log("[LemonFilters] handles count:", handles.length);
 
+      console.log("[LemonFilters] activeFilters:", hasActiveFilters(), "handles:", handles.length);
+
       filterExistingGrid(new Set(handles));
     } catch (e) {
       console.error("[LemonFilters] applyFilters failed:", e);
