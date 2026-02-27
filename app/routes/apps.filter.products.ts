@@ -2,7 +2,7 @@
 import { unauthenticatedStorefrontClient } from "~/shopify.server";
 
 function okJson(data: any) {
-  // Always 200 so Shopify App Proxy doesn't replace body with HTML
+  // Always 200 so App Proxy doesn't replace the body with HTML error pages
   return new Response(JSON.stringify(data, null, 2), {
     status: 200,
     headers: {
@@ -62,34 +62,65 @@ function hasOptionValue(
   return false;
 }
 
-/**
- * ✅ Works with any Shopify Storefront client shape:
- * - storefront.request(query, { variables })
- * - storefront.query(query, { variables })
- * - storefront.graphql(query, { variables })
- */
-async function storefrontQuery(storefront: any, query: string, variables: Record<string, any>) {
-  if (storefront && typeof storefront.request === "function") {
-    const res = await storefront.request(query, { variables });
-    // Most clients return { data, errors, extensions }
-    if (res?.errors?.length) throw new Error(res.errors[0]?.message || "Storefront errors");
-    return res?.data ?? res;
+// ---- GraphQL
+const PRODUCT_FIELDS = `
+  handle
+  vendor
+  productType
+  tags
+  options { name values }
+`;
+
+const ALL_PRODUCTS_QUERY = `#graphql
+query AllProducts($first: Int!, $query: String) {
+  products(first: $first, query: $query) {
+    nodes { ${PRODUCT_FIELDS} }
+  }
+}
+`;
+
+const PRODUCTS_IN_COLLECTION_QUERY = `#graphql
+query ProductsInCollection($collectionHandle: String!, $first: Int!, $query: String) {
+  collection(handle: $collectionHandle) {
+    products(first: $first, query: $query) {
+      nodes { ${PRODUCT_FIELDS} }
+    }
+  }
+}
+`;
+
+// ✅ Works across Shopify client versions
+async function storefrontRequest(
+  storefront: any,
+  query: string,
+  variables: Record<string, any>
+) {
+  // Some versions expose .query or .graphql
+  if (typeof storefront?.query === "function") {
+    return storefront.query(query, { variables });
+  }
+  if (typeof storefront?.graphql === "function") {
+    return storefront.graphql(query, { variables });
   }
 
-  if (storefront && typeof storefront.query === "function") {
-    const res = await storefront.query(query, { variables });
-    return res?.data ?? res;
+  // Most current Remix templates expose .request
+  if (typeof storefront?.request === "function") {
+    return storefront.request(query, { variables });
   }
 
-  if (storefront && typeof storefront.graphql === "function") {
-    const res = await storefront.graphql(query, { variables });
-    return res?.data ?? res;
+  // Last resort: try using fetch if provided
+  if (typeof storefront?.fetch === "function") {
+    // NOTE: in many templates, request() is preferred; fetch() signatures vary.
+    // If you hit this branch, paste me your storefront client shape and I’ll match it.
+    throw new Error(
+      `Storefront client has no request/query/graphql function. topKeys=${JSON.stringify(
+        Object.keys(storefront || {})
+      )}`
+    );
   }
 
   throw new Error(
-    `Storefront client has no request/query/graphql function. topKeys=${JSON.stringify(
-      storefront ? Object.keys(storefront) : []
-    )}`
+    `Invalid Storefront client. keys=${JSON.stringify(Object.keys(storefront || {}))}`
   );
 }
 
@@ -116,7 +147,7 @@ export async function loader({ request }: { request: Request }) {
 
     const storefront = unauthenticatedStorefrontClient(shopDomain);
 
-    // filters
+    // ---- filters
     const vendor = url.searchParams.get("vendor");
     const tag = url.searchParams.get("tag");
     const type = url.searchParams.get("type");
@@ -137,13 +168,16 @@ export async function loader({ request }: { request: Request }) {
 
     const query = terms.length ? terms.join(" ") : null;
 
-    // IMPORTANT: /collections/all is not a real collection handle in APIs
+    // ✅ /collections/all is not a real collection in Storefront APIs
     let products: any[] = [];
     if (collectionHandle === "all") {
-      const data = await storefrontQuery(storefront, ALL_PRODUCTS_QUERY, { first: 250, query });
+      const data = await storefrontRequest(storefront, ALL_PRODUCTS_QUERY, {
+        first: 250,
+        query,
+      });
       products = data?.products?.nodes ?? [];
     } else {
-      const data = await storefrontQuery(storefront, PRODUCTS_IN_COLLECTION_QUERY, {
+      const data = await storefrontRequest(storefront, PRODUCTS_IN_COLLECTION_QUERY, {
         collectionHandle,
         first: 250,
         query,
@@ -151,7 +185,7 @@ export async function loader({ request }: { request: Request }) {
       products = data?.collection?.products?.nodes ?? [];
     }
 
-    // facets + handles
+    // ---- facets + handles
     const vendorsSet = new Set<string>();
     const tagsSet = new Set<string>();
     const typesSet = new Set<string>();
@@ -202,14 +236,15 @@ export async function loader({ request }: { request: Request }) {
       shop: shopDomain,
       collectionHandle,
       facets,
+
       // legacy keys
       vendors: facets.vendors,
       colors: facets.colors,
       sizes: facets.sizes,
       tags: facets.tags,
       types: facets.types,
+
       filteredHandles,
-      debug: { productsFetched: products.length },
     });
   } catch (err: any) {
     console.error("[apps.filter.products] error:", err);
@@ -220,30 +255,3 @@ export async function loader({ request }: { request: Request }) {
     });
   }
 }
-
-// GraphQL
-const PRODUCT_FIELDS = `
-  handle
-  vendor
-  productType
-  tags
-  options { name values }
-`;
-
-const ALL_PRODUCTS_QUERY = `#graphql
-query AllProducts($first: Int!, $query: String) {
-  products(first: $first, query: $query) {
-    nodes { ${PRODUCT_FIELDS} }
-  }
-}
-`;
-
-const PRODUCTS_IN_COLLECTION_QUERY = `#graphql
-query ProductsInCollection($collectionHandle: String!, $first: Int!, $query: String) {
-  collection(handle: $collectionHandle) {
-    products(first: $first, query: $query) {
-      nodes { ${PRODUCT_FIELDS} }
-    }
-  }
-}
-`;
