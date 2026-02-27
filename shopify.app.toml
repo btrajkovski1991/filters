@@ -30,6 +30,6 @@ redirect_urls = [
 
 [app_proxy]
 # IMPORTANT: this must be ROOT domain (no /proxy, no /apps/filter)
-url = "https://filters-7bck.onrender.com"
-subpath = "filter"
+url = "https://filters-7bck.onrender.com/apps/filter"
+subpath = "lemonfilters39"
 prefix = "apps"
