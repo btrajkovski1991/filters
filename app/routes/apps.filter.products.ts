@@ -2,8 +2,9 @@
 import { unauthenticatedStorefrontClient } from "~/shopify.server";
 
 function okJson(data: any) {
+  // ✅ Always 200 so Shopify App Proxy doesn't replace body with HTML on errors
   return new Response(JSON.stringify(data, null, 2), {
-    status: 200, // ✅ always 200 for Shopify App Proxy
+    status: 200,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store",
@@ -21,35 +22,19 @@ function normalizeShopDomain(input: string) {
 }
 
 function inferShopDomain(request: Request, url: URL) {
+  // Try headers first
   const headerShop =
     request.headers.get("x-shopify-shop-domain") ||
     request.headers.get("X-Shopify-Shop-Domain");
 
+  // Then query param
   const qpShop = url.searchParams.get("shop");
+
+  // Then env fallback (best for direct Render testing)
   const envShop = process.env.SHOPIFY_STORE_DOMAIN;
 
-  return normalizeShopDomain(headerShop || qpShop || envShop || "");
-}
-
-// ✅ Works with createStorefrontApiClient output (request-based)
-async function sfRequest(
-  storefront: any,
-  query: string,
-  variables: Record<string, any>
-) {
-  if (storefront && typeof storefront.request === "function") {
-    // storefront.request({ query, variables }) is the common signature
-    return storefront.request({ query, variables });
-  }
-
-  // fallback (just in case your lib version differs)
-  if (storefront && typeof storefront.fetch === "function") {
-    return storefront.fetch(query, { variables });
-  }
-
-  throw new Error(
-    "Storefront client does not support request() or fetch(). Check createStorefrontApiClient version."
-  );
+  const candidate = headerShop || qpShop || envShop || "";
+  return normalizeShopDomain(candidate);
 }
 
 export async function loader({ request }: { request: Request }) {
@@ -75,6 +60,7 @@ export async function loader({ request }: { request: Request }) {
       });
     }
 
+    // ✅ Option 2: use your new helper from shopify.server.ts
     const storefront = unauthenticatedStorefrontClient(shopDomain);
 
     // ---- filters
@@ -100,23 +86,16 @@ export async function loader({ request }: { request: Request }) {
 
     // ✅ IMPORTANT: /collections/all is not a real collection handle in APIs
     let products: any[] = [];
-
     if (collectionHandle === "all") {
-      const data = await sfRequest(storefront, ALL_PRODUCTS_QUERY, {
-        first: 250,
-        query,
+      const data = await storefront.query(ALL_PRODUCTS_QUERY, {
+        variables: { first: 250, query },
       });
-      products = data?.data?.products?.nodes ?? data?.products?.nodes ?? [];
+      products = data?.products?.nodes ?? [];
     } else {
-      const data = await sfRequest(storefront, PRODUCTS_IN_COLLECTION_QUERY, {
-        collectionHandle,
-        first: 250,
-        query,
+      const data = await storefront.query(PRODUCTS_IN_COLLECTION_QUERY, {
+        variables: { collectionHandle, first: 250, query },
       });
-      products =
-        data?.data?.collection?.products?.nodes ??
-        data?.collection?.products?.nodes ??
-        [];
+      products = data?.collection?.products?.nodes ?? [];
     }
 
     // ---- facets + handles
@@ -153,7 +132,7 @@ export async function loader({ request }: { request: Request }) {
       if (wantedColor) match = match && hasOptionValue(options, ["color", "colour"], wantedColor);
       if (wantedSize) match = match && hasOptionValue(options, ["size"], wantedSize);
 
-      if (match && p.handle) filteredHandles.push(p.handle);
+      if (match) filteredHandles.push(p.handle);
     }
 
     const facets = {
@@ -166,7 +145,7 @@ export async function loader({ request }: { request: Request }) {
 
     return okJson({
       ok: true,
-      marker: "FILTER_HANDLES_OK_V5",
+      marker: "FILTER_HANDLES_OK_V4_DEPLOYTEST_01",
       shop: shopDomain,
       collectionHandle,
       facets,
@@ -182,9 +161,11 @@ export async function loader({ request }: { request: Request }) {
     });
   } catch (err: any) {
     console.error("[apps.filter.products] error:", err);
+
+    // ✅ always 200 JSON
     return okJson({
       ok: false,
-      marker: "FILTER_HANDLES_ERROR_V5",
+      marker: "FILTER_HANDLES_ERROR_V4",
       message: err?.message || String(err),
     });
   }
