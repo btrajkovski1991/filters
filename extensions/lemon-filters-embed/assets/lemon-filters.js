@@ -401,14 +401,19 @@ console.log("[LemonFilters] sectionId:", sectionId);
   );
 
   // ✅ SAFETY: if backend returns 0 handles but user hasn't selected filters,
-  // don't hide everything — show all products.
+  // do NOT hide everything — show all products.
   if (!hasActiveFilters() && handlesSet.size === 0) {
     for (const li of lis) {
       li.style.display = "";
       li.setAttribute("aria-hidden", "false");
     }
+
     const empty = grid.querySelector("[data-lemon-empty]");
     if (empty) empty.style.display = "none";
+
+    if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
+    window.dispatchEvent(new Event("scroll"));
+    window.dispatchEvent(new Event("resize"));
     return;
   }
 
