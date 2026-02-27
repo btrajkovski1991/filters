@@ -2,7 +2,7 @@
 import { unauthenticatedStorefrontClient } from "~/shopify.server";
 
 function okJson(data: any) {
-  // ✅ Always 200 so Shopify App Proxy doesn't replace body with HTML on errors
+  // Always 200 so Shopify App Proxy doesn't replace body with HTML
   return new Response(JSON.stringify(data, null, 2), {
     status: 200,
     headers: {
@@ -22,74 +22,75 @@ function normalizeShopDomain(input: string) {
 }
 
 function inferShopDomain(request: Request, url: URL) {
-  // Try headers first
   const headerShop =
     request.headers.get("x-shopify-shop-domain") ||
     request.headers.get("X-Shopify-Shop-Domain");
 
-  // Then query param
   const qpShop = url.searchParams.get("shop");
-
-  // Then env fallback (best for direct Render testing)
   const envShop = process.env.SHOPIFY_STORE_DOMAIN;
 
   const candidate = headerShop || qpShop || envShop || "";
   return normalizeShopDomain(candidate);
 }
 
-/**
- * ✅ Robust Storefront GraphQL runner.
- * Your unauthenticatedStorefrontClient() may return different shapes depending on template/version.
- * This normalizes it so you can always run GraphQL.
- */
-async function runStorefrontGraphQL(
-  shopDomain: string,
-  query: string,
-  variables: Record<string, any>
+function normalize(v: any) {
+  return (v ?? "").toString().trim().toLowerCase();
+}
+function sortAlpha(arr: string[]) {
+  return arr
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+function escapeQuery(v: string) {
+  const s = String(v).trim();
+  if (/[ :"]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
+  return s;
+}
+function hasOptionValue(
+  options: Array<{ name: string; values: string[] }>,
+  names: string[],
+  wanted: string
 ) {
-  const clientAny: any = await unauthenticatedStorefrontClient(shopDomain);
+  const wantedNorm = normalize(wanted);
+  for (const opt of options) {
+    const nameNorm = normalize(opt?.name);
+    if (!names.includes(nameNorm)) continue;
+    const vals = Array.isArray(opt?.values) ? opt.values : [];
+    if (vals.some((v) => normalize(v) === wantedNorm)) return true;
+  }
+  return false;
+}
 
-  // Most common shapes:
-  // - clientAny.graphql(query, { variables })
-  // - clientAny.storefront.graphql(query, { variables })
-  // - clientAny.query(...) (your old assumption)
-  const graphqlFn =
-    clientAny?.graphql ||
-    clientAny?.storefront?.graphql ||
-    clientAny?.query ||
-    clientAny?.storefront?.query;
-
-  if (typeof graphqlFn !== "function") {
-    const topKeys = Object.keys(clientAny || {});
-    const nestedKeys = Object.keys(clientAny?.storefront || {});
-    throw new Error(
-      `Storefront client has no graphql/query function. topKeys=${JSON.stringify(
-        topKeys
-      )} storefrontKeys=${JSON.stringify(nestedKeys)}`
-    );
+/**
+ * ✅ Works with any Shopify Storefront client shape:
+ * - storefront.request(query, { variables })
+ * - storefront.query(query, { variables })
+ * - storefront.graphql(query, { variables })
+ */
+async function storefrontQuery(storefront: any, query: string, variables: Record<string, any>) {
+  if (storefront && typeof storefront.request === "function") {
+    const res = await storefront.request(query, { variables });
+    // Most clients return { data, errors, extensions }
+    if (res?.errors?.length) throw new Error(res.errors[0]?.message || "Storefront errors");
+    return res?.data ?? res;
   }
 
-  // Call with the right "this" context if needed.
-  const ctx =
-    clientAny?.storefront && (graphqlFn === clientAny.storefront.graphql || graphqlFn === clientAny.storefront.query)
-      ? clientAny.storefront
-      : clientAny;
-
-  const resp = await graphqlFn.call(ctx, query, { variables });
-
-  // Different wrappers return different shapes:
-  // - { data, errors }
-  // - data directly
-  // - Response-like with json()
-  if (resp && typeof resp === "object") {
-    if ("data" in resp) return (resp as any).data;
-    if ("json" in resp && typeof (resp as any).json === "function") {
-      const j = await (resp as any).json();
-      return j?.data ?? j;
-    }
+  if (storefront && typeof storefront.query === "function") {
+    const res = await storefront.query(query, { variables });
+    return res?.data ?? res;
   }
 
-  return resp;
+  if (storefront && typeof storefront.graphql === "function") {
+    const res = await storefront.graphql(query, { variables });
+    return res?.data ?? res;
+  }
+
+  throw new Error(
+    `Storefront client has no request/query/graphql function. topKeys=${JSON.stringify(
+      storefront ? Object.keys(storefront) : []
+    )}`
+  );
 }
 
 export async function loader({ request }: { request: Request }) {
@@ -102,9 +103,7 @@ export async function loader({ request }: { request: Request }) {
     url.searchParams.delete("path");
 
     const collectionHandle = url.searchParams.get("collectionHandle");
-    if (!collectionHandle) {
-      return okJson({ ok: false, message: "Missing collectionHandle" });
-    }
+    if (!collectionHandle) return okJson({ ok: false, message: "Missing collectionHandle" });
 
     const shopDomain = inferShopDomain(request, url);
     if (!shopDomain) {
@@ -115,7 +114,9 @@ export async function loader({ request }: { request: Request }) {
       });
     }
 
-    // ---- filters
+    const storefront = unauthenticatedStorefrontClient(shopDomain);
+
+    // filters
     const vendor = url.searchParams.get("vendor");
     const tag = url.searchParams.get("tag");
     const type = url.searchParams.get("type");
@@ -134,26 +135,23 @@ export async function loader({ request }: { request: Request }) {
     if (minN != null && Number.isFinite(minN)) terms.push(`price:>=${minN}`);
     if (maxN != null && Number.isFinite(maxN)) terms.push(`price:<=${maxN}`);
 
-    const queryStr = terms.length ? terms.join(" ") : null;
+    const query = terms.length ? terms.join(" ") : null;
 
-    // ✅ IMPORTANT: /collections/all is not a real collection handle in APIs
+    // IMPORTANT: /collections/all is not a real collection handle in APIs
     let products: any[] = [];
     if (collectionHandle === "all") {
-      const data: any = await runStorefrontGraphQL(shopDomain, ALL_PRODUCTS_QUERY, {
-        first: 250,
-        query: queryStr,
-      });
+      const data = await storefrontQuery(storefront, ALL_PRODUCTS_QUERY, { first: 250, query });
       products = data?.products?.nodes ?? [];
     } else {
-      const data: any = await runStorefrontGraphQL(shopDomain, PRODUCTS_IN_COLLECTION_QUERY, {
+      const data = await storefrontQuery(storefront, PRODUCTS_IN_COLLECTION_QUERY, {
         collectionHandle,
         first: 250,
-        query: queryStr,
+        query,
       });
       products = data?.collection?.products?.nodes ?? [];
     }
 
-    // ---- facets + handles
+    // facets + handles
     const vendorsSet = new Set<string>();
     const tagsSet = new Set<string>();
     const typesSet = new Set<string>();
@@ -187,7 +185,7 @@ export async function loader({ request }: { request: Request }) {
       if (wantedColor) match = match && hasOptionValue(options, ["color", "colour"], wantedColor);
       if (wantedSize) match = match && hasOptionValue(options, ["size"], wantedSize);
 
-      if (match && p.handle) filteredHandles.push(String(p.handle));
+      if (match) filteredHandles.push(p.handle);
     }
 
     const facets = {
@@ -200,65 +198,27 @@ export async function loader({ request }: { request: Request }) {
 
     return okJson({
       ok: true,
-      marker: "FILTER_HANDLES_OK_V4_DEPLOYTEST_02",
+      marker: "FILTER_HANDLES_OK_V5",
       shop: shopDomain,
       collectionHandle,
-      debug: {
-        productsCount: products.length,
-        usedQuery: queryStr,
-        mode: collectionHandle === "all" ? "all-products" : "collection",
-      },
       facets,
-
       // legacy keys
       vendors: facets.vendors,
       colors: facets.colors,
       sizes: facets.sizes,
       tags: facets.tags,
       types: facets.types,
-
       filteredHandles,
+      debug: { productsFetched: products.length },
     });
   } catch (err: any) {
     console.error("[apps.filter.products] error:", err);
-
-    // ✅ always 200 JSON
     return okJson({
       ok: false,
-      marker: "FILTER_HANDLES_ERROR_V4",
+      marker: "FILTER_HANDLES_ERROR_V5",
       message: err?.message || String(err),
     });
   }
-}
-
-// helpers
-function normalize(v: any) {
-  return (v ?? "").toString().trim().toLowerCase();
-}
-function sortAlpha(arr: string[]) {
-  return arr
-    .map((x) => String(x ?? "").trim())
-    .filter(Boolean)
-    .sort((a, b) => a.localeCompare(b));
-}
-function escapeQuery(v: string) {
-  const s = String(v).trim();
-  if (/[ :"]/.test(s)) return `"${s.replace(/"/g, '\\"')}"`;
-  return s;
-}
-function hasOptionValue(
-  options: Array<{ name: string; values: string[] }>,
-  names: string[],
-  wanted: string
-) {
-  const wantedNorm = normalize(wanted);
-  for (const opt of options) {
-    const nameNorm = normalize(opt?.name);
-    if (!names.includes(nameNorm)) continue;
-    const vals = Array.isArray(opt?.values) ? opt.values : [];
-    if (vals.some((v) => normalize(v) === wantedNorm)) return true;
-  }
-  return false;
 }
 
 // GraphQL
