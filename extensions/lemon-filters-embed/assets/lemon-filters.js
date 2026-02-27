@@ -1,4 +1,4 @@
-// lemon-filters.js (FULL UPDATED - SAFE)
+// lemon-filters.js (FULL UPDATED - SAFE + HORIZON-PROOF)
 
 // -----------------------------
 // Basics / helpers
@@ -63,21 +63,30 @@ console.log("[LemonFilters] sectionId:", sectionId);
   const resultsList =
     grid.closest("results-list") || document.querySelector("results-list");
 
-  // ---- Place filters near theme filters on desktop, fallback to wrapper ----
+  // -----------------------------
+  // Mounting (IMPORTANT: never mount inside facet-filters-form)
+  // -----------------------------
   function getDesktopMount() {
-    return (
+    // Prefer wrapper containers (safe)
+    const wrapper =
       document.querySelector(".facets-wrapper") ||
-      document.querySelector("facet-filters-form") ||
       document.querySelector("#main-collection-filters") ||
       document.querySelector(".collection-filters") ||
-      document.querySelector(".collection__filters")
-    );
+      document.querySelector(".collection__filters");
+
+    if (wrapper) return wrapper;
+
+    // If ONLY facet-filters-form exists, mount OUTSIDE it
+    const form = document.querySelector("facet-filters-form");
+    return form?.parentElement || null;
   }
 
   function ensureLayout() {
     const desktopMount = getDesktopMount();
     if (desktopMount) {
-      if (!desktopMount.contains(root)) desktopMount.prepend(root);
+      if (!desktopMount.contains(root)) {
+        desktopMount.prepend(root);
+      }
       root.classList.remove("hidden", "md:hidden", "lg:hidden");
       root.style.display = "block";
       return;
@@ -174,6 +183,19 @@ console.log("[LemonFilters] sectionId:", sectionId);
   const clearBtn = root.querySelector("[data-clear]");
 
   // -----------------------------
+  // CRITICAL: Stop Horizon facets from intercepting our controls
+  // (Horizon uses delegated listeners on facet-filters-form / wrappers)
+  // -----------------------------
+  const stopThemeFacets = (e) => {
+    // stop capture + bubble
+    e.stopPropagation();
+  };
+  root.addEventListener("change", stopThemeFacets, true);
+  root.addEventListener("input", stopThemeFacets, true);
+  root.addEventListener("click", stopThemeFacets, true);
+  root.addEventListener("submit", stopThemeFacets, true);
+
+  // -----------------------------
   // Helpers
   // -----------------------------
   function normalizeOpt(v) {
@@ -260,8 +282,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
     const pretty = buildPrettyUrlParams();
     url.search = pretty.toString() ? `?${pretty.toString()}` : "";
 
-    if (mode === "push") history.pushState({ lemonFilters: true }, "", url);
-    else history.replaceState({ lemonFilters: true }, "", url);
+    if (mode === "push") history.pushState({ lemonFilters: true }, "", url.toString());
+    else history.replaceState({ lemonFilters: true }, "", url.toString());
   }
 
   function applyUrlToUI() {
@@ -345,7 +367,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
   }
 
   async function fetchFilteredHandles() {
-    // IMPORTANT: must match your Shopify App Proxy subpath
     const APP_PROXY_BASE = "/apps/lemonfilters39";
     const url = new URL(`${APP_PROXY_BASE}/products`, window.location.origin);
 
@@ -381,6 +402,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
     return data;
   }
 
+  // Guard to prevent observer loop while WE manipulate the grid
+  let suppressObserver = false;
+
   function filterExistingGrid(handlesSet) {
     grid = getGrid() || grid;
     if (!grid) return;
@@ -389,8 +413,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
       li.querySelector('a[href*="/products/"]')
     );
 
-    // ✅ SAFETY: if user has NO filters selected, never hide all products.
-    // Even if backend returns [] for any reason.
+    suppressObserver = true;
+
+    // If user has NO filters selected, never hide all products.
     if (!hasActiveFilters()) {
       for (const li of lis) {
         li.style.display = "";
@@ -402,10 +427,11 @@ console.log("[LemonFilters] sectionId:", sectionId);
       if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
       window.dispatchEvent(new Event("scroll"));
       window.dispatchEvent(new Event("resize"));
+
+      suppressObserver = false;
       return;
     }
 
-    // If filters ARE active, then apply the handle filter normally.
     let visibleCount = 0;
 
     for (const li of lis) {
@@ -439,6 +465,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
     if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
     window.dispatchEvent(new Event("scroll"));
     window.dispatchEvent(new Event("resize"));
+
+    suppressObserver = false;
   }
 
   function hydrateOptionsFromResponse(data) {
@@ -488,9 +516,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
       filterExistingGrid(new Set(handles));
     } catch (e) {
       console.error("[LemonFilters] applyFilters failed:", e);
-
-      // no hard alert (less annoying). Uncomment if you want alerts.
-      // alert("Filters failed. Check DevTools > Console and Network.");
     } finally {
       root.classList.remove("is-loading");
       setLoading(false);
@@ -540,13 +565,15 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
   // If Horizon re-renders the list, re-apply filters automatically
   const observer = new MutationObserver((mutations) => {
+    if (suppressObserver) return;
+
     const hasChildListChange = mutations.some((m) => m.type === "childList");
     if (!hasChildListChange) return;
 
     clearTimeout(observer.__t);
     observer.__t = setTimeout(() => {
       applyFilters({ urlMode: "replace" });
-    }, 120);
+    }, 160);
   });
 
   observer.observe(grid, { childList: true, subtree: true });
