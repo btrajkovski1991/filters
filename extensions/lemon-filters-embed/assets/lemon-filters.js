@@ -1,4 +1,4 @@
-// lemon-filters.js (FULL UPDATED - SAFE + HORIZON-PROOF)
+// lemon-filters.js (FULL UPDATED - SAFE + HORIZON-PROOF + STABLE FILTER UI)
 
 // -----------------------------
 // Basics / helpers
@@ -54,55 +54,40 @@ console.log("[LemonFilters] sectionId:", sectionId);
     );
   }
 
+  function getResultsListEl() {
+    return document.querySelector("results-list");
+  }
+
   let grid = getGrid();
   if (!grid) {
-    console.warn("[LemonFilters] Could not find product grid");
-    return;
+    console.warn("[LemonFilters] Could not find product grid (yet)");
   }
 
-  const resultsList =
-    grid.closest("results-list") || document.querySelector("results-list");
+  let resultsList = (grid && grid.closest("results-list")) || getResultsListEl();
 
   // -----------------------------
-  // Mounting (IMPORTANT: never mount inside facet-filters-form)
+  // Mounting (CRITICAL: keep filters OUTSIDE results-list)
   // -----------------------------
-  function getDesktopMount() {
-    // Prefer wrapper containers (safe)
-    const wrapper =
-      document.querySelector(".facets-wrapper") ||
-      document.querySelector("#main-collection-filters") ||
-      document.querySelector(".collection-filters") ||
-      document.querySelector(".collection__filters");
-
-    if (wrapper) return wrapper;
-
-    // If ONLY facet-filters-form exists, mount OUTSIDE it
-    const form = document.querySelector("facet-filters-form");
-    return form?.parentElement || null;
-  }
-
   function ensureLayout() {
-    const desktopMount = getDesktopMount();
-    if (desktopMount) {
-      if (!desktopMount.contains(root)) {
-        desktopMount.prepend(root);
-      }
-      root.classList.remove("hidden", "md:hidden", "lg:hidden");
-      root.style.display = "block";
-      return;
+    const rlEl = getResultsListEl();
+    if (!rlEl || !rlEl.parentElement) return;
+
+    // Create a stable host right BEFORE results-list (inside the same section container)
+    let host =
+      rlEl.parentElement.querySelector(":scope > .lemon-filters-host") || null;
+
+    if (!host) {
+      host = document.createElement("div");
+      host.className = "lemon-filters-host";
+      rlEl.parentElement.insertBefore(host, rlEl);
     }
 
-    // fallback: wrap root + grid parent
-    const wrapTarget = grid.closest(".collection-wrapper") || grid.parentElement;
-    if (!wrapTarget || !wrapTarget.parentElement) return;
-
-    if (!wrapTarget.parentElement.classList.contains("lemon-filters-layout")) {
-      const layout = document.createElement("div");
-      layout.className = "lemon-filters-layout";
-      wrapTarget.parentElement.insertBefore(layout, wrapTarget);
-      layout.appendChild(root);
-      layout.appendChild(wrapTarget);
+    // If root is currently inside results-list, move it out
+    if (root.closest("results-list")) {
+      root.remove();
     }
+
+    if (!host.contains(root)) host.appendChild(root);
 
     root.classList.remove("hidden", "md:hidden", "lg:hidden");
     root.style.display = "block";
@@ -183,11 +168,9 @@ console.log("[LemonFilters] sectionId:", sectionId);
   const clearBtn = root.querySelector("[data-clear]");
 
   // -----------------------------
-  // CRITICAL: Stop Horizon facets from intercepting our controls
-  // (Horizon uses delegated listeners on facet-filters-form / wrappers)
+  // Stop Horizon facets from intercepting our controls
   // -----------------------------
   const stopThemeFacets = (e) => {
-    // stop capture + bubble
     e.stopPropagation();
   };
   root.addEventListener("change", stopThemeFacets, true);
@@ -282,7 +265,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
     const pretty = buildPrettyUrlParams();
     url.search = pretty.toString() ? `?${pretty.toString()}` : "";
 
-    if (mode === "push") history.pushState({ lemonFilters: true }, "", url.toString());
+    if (mode === "push")
+      history.pushState({ lemonFilters: true }, "", url.toString());
     else history.replaceState({ lemonFilters: true }, "", url.toString());
   }
 
@@ -324,7 +308,7 @@ console.log("[LemonFilters] sectionId:", sectionId);
     if (minEl?.value) params.set("minPrice", minEl.value);
     if (maxEl?.value) params.set("maxPrice", maxEl.value);
 
-    // ignore theme noise (just in case)
+    // ignore theme noise
     params.delete("section_id");
     params.delete("sections");
     params.delete("path");
@@ -415,7 +399,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
     suppressObserver = true;
 
-    // If user has NO filters selected, never hide all products.
     if (!hasActiveFilters()) {
       for (const li of lis) {
         li.style.display = "";
@@ -423,11 +406,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
       }
       const empty = grid.querySelector("[data-lemon-empty]");
       if (empty) empty.style.display = "none";
-
-      if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
-      window.dispatchEvent(new Event("scroll"));
-      window.dispatchEvent(new Event("resize"));
-
       suppressObserver = false;
       return;
     }
@@ -461,10 +439,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
     } else if (empty) {
       empty.style.display = "none";
     }
-
-    if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
-    window.dispatchEvent(new Event("scroll"));
-    window.dispatchEvent(new Event("resize"));
 
     suppressObserver = false;
   }
@@ -504,15 +478,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
       hydrateOptionsFromResponse(data);
 
       const handles = getHandlesFromResponse(data);
-      console.log(
-        "[LemonFilters] activeFilters:",
-        hasActiveFilters(),
-        "handles:",
-        handles.length,
-        "marker:",
-        data?.marker
-      );
-
       filterExistingGrid(new Set(handles));
     } catch (e) {
       console.error("[LemonFilters] applyFilters failed:", e);
@@ -563,18 +528,22 @@ console.log("[LemonFilters] sectionId:", sectionId);
   applyUrlToUI();
   applyFilters({ urlMode: "replace" });
 
-  // If Horizon re-renders the list, re-apply filters automatically
-  const observer = new MutationObserver((mutations) => {
+  // Observe results-list rerenders: re-find grid and re-apply DOM filtering
+  const observer = new MutationObserver(() => {
     if (suppressObserver) return;
 
-    const hasChildListChange = mutations.some((m) => m.type === "childList");
-    if (!hasChildListChange) return;
+    ensureLayout(); // keeps filters outside results-list
 
+    const newGrid = getGrid();
+    if (newGrid && newGrid !== grid) grid = newGrid;
+
+    // Re-apply current filter state to new DOM
     clearTimeout(observer.__t);
     observer.__t = setTimeout(() => {
       applyFilters({ urlMode: "replace" });
     }, 160);
   });
 
-  observer.observe(grid, { childList: true, subtree: true });
+  const rlObs = getResultsListEl();
+  if (rlObs) observer.observe(rlObs, { childList: true, subtree: true });
 })();
