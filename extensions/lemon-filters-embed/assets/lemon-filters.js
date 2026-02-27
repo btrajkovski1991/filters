@@ -338,43 +338,43 @@ console.log("[LemonFilters] sectionId:", sectionId);
   }
 
   async function fetchFilteredHandles() {
-    // Use absolute URL + same-origin credentials (best for Shopify storefront)
-    const url = new URL("/apps/filter/products", window.location.origin);
+  // IMPORTANT: must match your Shopify App Proxy subpath
+  const APP_PROXY_BASE = "/apps/lemonfilters39";
 
-    const qs = new URLSearchParams(buildFilterQuery());
-    for (const [k, v] of qs.entries()) url.searchParams.set(k, v);
+  const url = new URL(`${APP_PROXY_BASE}/products`, window.location.origin);
 
-    const res = await fetch(url.toString(), {
-      method: "GET",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    });
+  const qs = new URLSearchParams(buildFilterQuery());
+  for (const [k, v] of qs.entries()) url.searchParams.set(k, v);
 
-    const contentType = res.headers.get("content-type") || "";
-    const raw = await res.text();
+  const res = await fetch(url.toString(), {
+    method: "GET",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
 
-    if (!contentType.includes("application/json")) {
-      throw new Error(
-        `Non-JSON response from /apps/filter/products (content-type: ${contentType})`
-      );
-    }
+  const contentType = res.headers.get("content-type") || "";
+  const raw = await res.text();
 
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      throw new Error("Invalid JSON from /apps/filter/products");
-    }
-
-    if (!res.ok || data?.ok === false) {
-      throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
-    }
-
-    // Debug payload
-    console.log("[LemonFilters] proxy response keys:", Object.keys(data || {}));
-
-    return data;
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      `Non-JSON response from ${APP_PROXY_BASE}/products (content-type: ${contentType})`
+    );
   }
+
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    throw new Error(`Invalid JSON from ${APP_PROXY_BASE}/products`);
+  }
+
+  if (!res.ok || data?.ok === false) {
+    throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+  }
+
+  console.log("[LemonFilters] proxy response keys:", Object.keys(data || {}));
+  return data;
+}
 
   // ✅ Horizon-safe: filter existing DOM in-place
   function filterExistingGrid(handlesSet) {
