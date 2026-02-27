@@ -3,6 +3,21 @@
 // -----------------------------
 // Basics / helpers
 // -----------------------------
+
+
+function hasActiveFilters() {
+  return Boolean(
+    normalizeOpt(colorSelect?.value) ||
+      normalizeOpt(sizeSelect?.value) ||
+      normalizeOpt(vendorSelect?.value) ||
+      normalizeOpt(tagSelect?.value) ||
+      normalizeOpt(typeSelect?.value) ||
+      (minEl?.value ?? "").toString().trim() ||
+      (maxEl?.value ?? "").toString().trim()
+  );
+}
+
+
 function getResultsList() {
   return document.querySelector("results-list");
 }
@@ -378,47 +393,59 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
   // ✅ Horizon-safe: filter existing DOM in-place
   function filterExistingGrid(handlesSet) {
-    grid = getGrid() || grid;
-    if (!grid) return;
+  grid = getGrid() || grid;
+  if (!grid) return;
 
-    const lis = Array.from(grid.querySelectorAll("li")).filter((li) =>
-      li.querySelector('a[href*="/products/"]')
-    );
+  const lis = Array.from(grid.querySelectorAll("li")).filter((li) =>
+    li.querySelector('a[href*="/products/"]')
+  );
 
-    let visibleCount = 0;
-
+  // ✅ SAFETY: if backend returns 0 handles but user hasn't selected filters,
+  // don't hide everything — show all products.
+  if (!hasActiveFilters() && handlesSet.size === 0) {
     for (const li of lis) {
-      const handle = extractHandleFromLi(li);
-      const show = handle && handlesSet.has(handle);
-
-      li.style.display = show ? "" : "none";
-      li.setAttribute("aria-hidden", show ? "false" : "true");
-
-      if (show) visibleCount++;
+      li.style.display = "";
+      li.setAttribute("aria-hidden", "false");
     }
-
-    let empty = grid.querySelector("[data-lemon-empty]");
-    if (visibleCount === 0) {
-      if (!empty) {
-        empty = document.createElement("li");
-        empty.setAttribute("data-lemon-empty", "true");
-        empty.innerHTML = `
-          <div style="padding:40px;text-align:center;width:100%;">
-            <strong>No products found</strong>
-            <div style="margin-top:8px;opacity:.75;">Try changing your filters.</div>
-          </div>
-        `;
-        grid.appendChild(empty);
-      }
-      empty.style.display = "";
-    } else if (empty) {
-      empty.style.display = "none";
-    }
-
-    if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
-    window.dispatchEvent(new Event("scroll"));
-    window.dispatchEvent(new Event("resize"));
+    const empty = grid.querySelector("[data-lemon-empty]");
+    if (empty) empty.style.display = "none";
+    return;
   }
+
+  let visibleCount = 0;
+
+  for (const li of lis) {
+    const handle = extractHandleFromLi(li);
+    const show = handle && handlesSet.has(handle);
+
+    li.style.display = show ? "" : "none";
+    li.setAttribute("aria-hidden", show ? "false" : "true");
+
+    if (show) visibleCount++;
+  }
+
+  let empty = grid.querySelector("[data-lemon-empty]");
+  if (visibleCount === 0) {
+    if (!empty) {
+      empty = document.createElement("li");
+      empty.setAttribute("data-lemon-empty", "true");
+      empty.innerHTML = `
+        <div style="padding:40px;text-align:center;width:100%;">
+          <strong>No products found</strong>
+          <div style="margin-top:8px;opacity:.75;">Try changing your filters.</div>
+        </div>
+      `;
+      grid.appendChild(empty);
+    }
+    empty.style.display = "";
+  } else if (empty) {
+    empty.style.display = "none";
+  }
+
+  if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
+  window.dispatchEvent(new Event("scroll"));
+  window.dispatchEvent(new Event("resize"));
+}
 
   // ✅ Accept both response formats:
   // - V1: { vendors, colors, sizes, tags, types }
