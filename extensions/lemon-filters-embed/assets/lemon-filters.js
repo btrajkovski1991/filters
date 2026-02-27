@@ -1,30 +1,13 @@
-// lemon-filters.js (FULL UPDATED)
+// lemon-filters.js (FULL UPDATED - SAFE)
 
 // -----------------------------
 // Basics / helpers
 // -----------------------------
-
-
-function hasActiveFilters() {
-  return Boolean(
-    normalizeOpt(colorSelect?.value) ||
-      normalizeOpt(sizeSelect?.value) ||
-      normalizeOpt(vendorSelect?.value) ||
-      normalizeOpt(tagSelect?.value) ||
-      normalizeOpt(typeSelect?.value) ||
-      (minEl?.value ?? "").toString().trim() ||
-      (maxEl?.value ?? "").toString().trim()
-  );
-}
-
-
 function getResultsList() {
   return document.querySelector("results-list");
 }
 
 function getSectionIdFromResultsList(rl) {
-  // Horizon stores the actual section id here:
-  // section-id="template--...__main"
   return rl?.getAttribute("section-id") || null;
 }
 
@@ -197,6 +180,18 @@ console.log("[LemonFilters] sectionId:", sectionId);
     return (v ?? "").toString().trim();
   }
 
+  function hasActiveFilters() {
+    return Boolean(
+      normalizeOpt(colorSelect?.value) ||
+        normalizeOpt(sizeSelect?.value) ||
+        normalizeOpt(vendorSelect?.value) ||
+        normalizeOpt(tagSelect?.value) ||
+        normalizeOpt(typeSelect?.value) ||
+        (minEl?.value ?? "").toString().trim() ||
+        (maxEl?.value ?? "").toString().trim()
+    );
+  }
+
   function resetSelectToAll(selectEl) {
     if (!selectEl) return;
     selectEl.value = "";
@@ -208,10 +203,10 @@ console.log("[LemonFilters] sectionId:", sectionId);
 
     const currentValue = selectEl.value;
 
-    // keep first option ("All"), then rebuild unique list
     const keepFirst = selectEl.options[0]
       ? selectEl.options[0].cloneNode(true)
       : null;
+
     selectEl.innerHTML = "";
     if (keepFirst) selectEl.appendChild(keepFirst);
 
@@ -228,7 +223,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
         seen.add(v);
       });
 
-    // restore selection if still present
     if (
       currentValue &&
       Array.from(selectEl.options).some((o) => o.value === currentValue)
@@ -239,13 +233,12 @@ console.log("[LemonFilters] sectionId:", sectionId);
     }
   }
 
-  // --- Professional URL (shareable), no page= ---
   function buildPrettyUrlParams() {
     const p = new URLSearchParams();
 
+    const vendor = normalizeOpt(vendorSelect?.value);
     const color = normalizeOpt(colorSelect?.value);
     const size = normalizeOpt(sizeSelect?.value);
-    const vendor = normalizeOpt(vendorSelect?.value);
     const tag = normalizeOpt(tagSelect?.value);
     const type = normalizeOpt(typeSelect?.value);
 
@@ -267,9 +260,8 @@ console.log("[LemonFilters] sectionId:", sectionId);
     const pretty = buildPrettyUrlParams();
     url.search = pretty.toString() ? `?${pretty.toString()}` : "";
 
-    if (mode === "push")
-      history.pushState({ lemonFilters: true }, "", url.toString());
-    else history.replaceState({ lemonFilters: true }, "", url.toString());
+    if (mode === "push") history.pushState({ lemonFilters: true }, "", url);
+    else history.replaceState({ lemonFilters: true }, "", url);
   }
 
   function applyUrlToUI() {
@@ -291,7 +283,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
     if (maxEl) maxEl.value = p.get("max") || "";
   }
 
-  // Backend query builder (map URL min/max -> backend minPrice/maxPrice)
   function buildFilterQuery() {
     const params = new URLSearchParams();
     params.set("collectionHandle", collectionHandle);
@@ -311,6 +302,11 @@ console.log("[LemonFilters] sectionId:", sectionId);
     if (minEl?.value) params.set("minPrice", minEl.value);
     if (maxEl?.value) params.set("maxPrice", maxEl.value);
 
+    // ignore theme noise (just in case)
+    params.delete("section_id");
+    params.delete("sections");
+    params.delete("path");
+
     return params.toString();
   }
 
@@ -322,9 +318,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
     return m ? m[1] : null;
   }
 
-  // -----------------------------
-  // NEW: Robust response parsing
-  // -----------------------------
   function getHandlesFromResponse(data) {
     const candidates = [
       data?.filteredHandles,
@@ -333,7 +326,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
       data?.products,
       data?.data?.handles,
     ];
-
     for (const c of candidates) {
       if (Array.isArray(c)) return c;
     }
@@ -353,108 +345,102 @@ console.log("[LemonFilters] sectionId:", sectionId);
   }
 
   async function fetchFilteredHandles() {
-  // IMPORTANT: must match your Shopify App Proxy subpath
-  const APP_PROXY_BASE = "/apps/lemonfilters39";
+    // IMPORTANT: must match your Shopify App Proxy subpath
+    const APP_PROXY_BASE = "/apps/lemonfilters39";
+    const url = new URL(`${APP_PROXY_BASE}/products`, window.location.origin);
 
-  const url = new URL(`${APP_PROXY_BASE}/products`, window.location.origin);
+    const qs = new URLSearchParams(buildFilterQuery());
+    for (const [k, v] of qs.entries()) url.searchParams.set(k, v);
 
-  const qs = new URLSearchParams(buildFilterQuery());
-  for (const [k, v] of qs.entries()) url.searchParams.set(k, v);
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
 
-  const res = await fetch(url.toString(), {
-    method: "GET",
-    credentials: "same-origin",
-    headers: { Accept: "application/json" },
-  });
+    const contentType = res.headers.get("content-type") || "";
+    const raw = await res.text();
 
-  const contentType = res.headers.get("content-type") || "";
-  const raw = await res.text();
-
-  if (!contentType.includes("application/json")) {
-    throw new Error(
-      `Non-JSON response from ${APP_PROXY_BASE}/products (content-type: ${contentType})`
-    );
-  }
-
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    throw new Error(`Invalid JSON from ${APP_PROXY_BASE}/products`);
-  }
-
-  if (!res.ok || data?.ok === false) {
-    throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
-  }
-
-  console.log("[LemonFilters] proxy response keys:", Object.keys(data || {}));
-  return data;
-}
-
-  // ✅ Horizon-safe: filter existing DOM in-place
-  function filterExistingGrid(handlesSet) {
-  grid = getGrid() || grid;
-  if (!grid) return;
-
-  const lis = Array.from(grid.querySelectorAll("li")).filter((li) =>
-    li.querySelector('a[href*="/products/"]')
-  );
-
-  // ✅ SAFETY: if backend returns 0 handles but user hasn't selected filters,
-  // do NOT hide everything — show all products.
-  if (!hasActiveFilters() && handlesSet.size === 0) {
-    for (const li of lis) {
-      li.style.display = "";
-      li.setAttribute("aria-hidden", "false");
+    if (!contentType.includes("application/json")) {
+      throw new Error(
+        `Non-JSON response from ${APP_PROXY_BASE}/products (content-type: ${contentType})`
+      );
     }
 
-    const empty = grid.querySelector("[data-lemon-empty]");
-    if (empty) empty.style.display = "none";
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      throw new Error(`Invalid JSON from ${APP_PROXY_BASE}/products`);
+    }
+
+    if (!res.ok || data?.ok === false) {
+      throw new Error(data?.message || data?.error || `HTTP ${res.status}`);
+    }
+
+    return data;
+  }
+
+  function filterExistingGrid(handlesSet) {
+    grid = getGrid() || grid;
+    if (!grid) return;
+
+    const lis = Array.from(grid.querySelectorAll("li")).filter((li) =>
+      li.querySelector('a[href*="/products/"]')
+    );
+
+    // ✅ SAFETY: if user has NO filters selected, never hide all products.
+    // Even if backend returns [] for any reason.
+    if (!hasActiveFilters()) {
+      for (const li of lis) {
+        li.style.display = "";
+        li.setAttribute("aria-hidden", "false");
+      }
+      const empty = grid.querySelector("[data-lemon-empty]");
+      if (empty) empty.style.display = "none";
+
+      if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
+      window.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("resize"));
+      return;
+    }
+
+    // If filters ARE active, then apply the handle filter normally.
+    let visibleCount = 0;
+
+    for (const li of lis) {
+      const handle = extractHandleFromLi(li);
+      const show = handle && handlesSet.has(handle);
+
+      li.style.display = show ? "" : "none";
+      li.setAttribute("aria-hidden", show ? "false" : "true");
+
+      if (show) visibleCount++;
+    }
+
+    let empty = grid.querySelector("[data-lemon-empty]");
+    if (visibleCount === 0) {
+      if (!empty) {
+        empty = document.createElement("li");
+        empty.setAttribute("data-lemon-empty", "true");
+        empty.innerHTML = `
+          <div style="padding:40px;text-align:center;width:100%;">
+            <strong>No products found</strong>
+            <div style="margin-top:8px;opacity:.75;">Try changing your filters.</div>
+          </div>
+        `;
+        grid.appendChild(empty);
+      }
+      empty.style.display = "";
+    } else if (empty) {
+      empty.style.display = "none";
+    }
 
     if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
     window.dispatchEvent(new Event("scroll"));
     window.dispatchEvent(new Event("resize"));
-    return;
   }
 
-  let visibleCount = 0;
-
-  for (const li of lis) {
-    const handle = extractHandleFromLi(li);
-    const show = handle && handlesSet.has(handle);
-
-    li.style.display = show ? "" : "none";
-    li.setAttribute("aria-hidden", show ? "false" : "true");
-
-    if (show) visibleCount++;
-  }
-
-  let empty = grid.querySelector("[data-lemon-empty]");
-  if (visibleCount === 0) {
-    if (!empty) {
-      empty = document.createElement("li");
-      empty.setAttribute("data-lemon-empty", "true");
-      empty.innerHTML = `
-        <div style="padding:40px;text-align:center;width:100%;">
-          <strong>No products found</strong>
-          <div style="margin-top:8px;opacity:.75;">Try changing your filters.</div>
-        </div>
-      `;
-      grid.appendChild(empty);
-    }
-    empty.style.display = "";
-  } else if (empty) {
-    empty.style.display = "none";
-  }
-
-  if (resultsList) resultsList.setAttribute("infinite-scroll", "false");
-  window.dispatchEvent(new Event("scroll"));
-  window.dispatchEvent(new Event("resize"));
-}
-
-  // ✅ Accept both response formats:
-  // - V1: { vendors, colors, sizes, tags, types }
-  // - V2: { facets: { vendors, colors, sizes, tags, types } }
   function hydrateOptionsFromResponse(data) {
     const facets = data?.facets || {};
 
@@ -469,14 +455,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
     setSelectOptions(sizeSelect, sizes);
     setSelectOptions(tagSelect, tags);
     setSelectOptions(typeSelect, types);
-
-    console.log("[LemonFilters] hydrate facets:", {
-      vendors: Array.isArray(vendors) ? vendors.length : 0,
-      colors: Array.isArray(colors) ? colors.length : 0,
-      sizes: Array.isArray(sizes) ? sizes.length : 0,
-      tags: Array.isArray(tags) ? tags.length : 0,
-      types: Array.isArray(types) ? types.length : 0,
-    });
   }
 
   // -----------------------------
@@ -498,14 +476,21 @@ console.log("[LemonFilters] sectionId:", sectionId);
       hydrateOptionsFromResponse(data);
 
       const handles = getHandlesFromResponse(data);
-      console.log("[LemonFilters] handles count:", handles.length);
-
-      console.log("[LemonFilters] activeFilters:", hasActiveFilters(), "handles:", handles.length);
+      console.log(
+        "[LemonFilters] activeFilters:",
+        hasActiveFilters(),
+        "handles:",
+        handles.length,
+        "marker:",
+        data?.marker
+      );
 
       filterExistingGrid(new Set(handles));
     } catch (e) {
       console.error("[LemonFilters] applyFilters failed:", e);
-      alert("Filters failed. Check DevTools > Console and Network.");
+
+      // no hard alert (less annoying). Uncomment if you want alerts.
+      // alert("Filters failed. Check DevTools > Console and Network.");
     } finally {
       root.classList.remove("is-loading");
       setLoading(false);
@@ -554,7 +539,6 @@ console.log("[LemonFilters] sectionId:", sectionId);
   applyFilters({ urlMode: "replace" });
 
   // If Horizon re-renders the list, re-apply filters automatically
-  // Guard against loops: only re-run if childList mutations happen
   const observer = new MutationObserver((mutations) => {
     const hasChildListChange = mutations.some((m) => m.type === "childList");
     if (!hasChildListChange) return;
