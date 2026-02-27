@@ -4,15 +4,15 @@
 {% endcomment %}
 
 <script>
-  // Run ASAP to reduce FOUC (embed is in body, so it's "best effort")
   document.documentElement.classList.add('lemon-filter-loading');
 
   window.LemonFilters = window.LemonFilters || {};
   window.LemonFilters.shop = {{ shop.permanent_domain | json }};
   window.LemonFilters.moneyFormat = {{ shop.money_format | json }};
+  window.LemonFilters.enabled = {{ block.settings.enable_filters | json }};
 </script>
 
-<div id="lemon-filters-root" data-lemon-filters></div>
+<div id="lemon-filters-root" data-lemon-filters data-lemon-root="true"></div>
 
 {{ 'lemon-filters.css' | asset_url | stylesheet_tag }}
 <script src="{{ 'lemon-filters.js' | asset_url }}" defer></script>
