@@ -37,6 +37,61 @@ function inferShopDomain(request: Request, url: URL) {
   return normalizeShopDomain(candidate);
 }
 
+/**
+ * ✅ Robust Storefront GraphQL runner.
+ * Your unauthenticatedStorefrontClient() may return different shapes depending on template/version.
+ * This normalizes it so you can always run GraphQL.
+ */
+async function runStorefrontGraphQL(
+  shopDomain: string,
+  query: string,
+  variables: Record<string, any>
+) {
+  const clientAny: any = await unauthenticatedStorefrontClient(shopDomain);
+
+  // Most common shapes:
+  // - clientAny.graphql(query, { variables })
+  // - clientAny.storefront.graphql(query, { variables })
+  // - clientAny.query(...) (your old assumption)
+  const graphqlFn =
+    clientAny?.graphql ||
+    clientAny?.storefront?.graphql ||
+    clientAny?.query ||
+    clientAny?.storefront?.query;
+
+  if (typeof graphqlFn !== "function") {
+    const topKeys = Object.keys(clientAny || {});
+    const nestedKeys = Object.keys(clientAny?.storefront || {});
+    throw new Error(
+      `Storefront client has no graphql/query function. topKeys=${JSON.stringify(
+        topKeys
+      )} storefrontKeys=${JSON.stringify(nestedKeys)}`
+    );
+  }
+
+  // Call with the right "this" context if needed.
+  const ctx =
+    clientAny?.storefront && (graphqlFn === clientAny.storefront.graphql || graphqlFn === clientAny.storefront.query)
+      ? clientAny.storefront
+      : clientAny;
+
+  const resp = await graphqlFn.call(ctx, query, { variables });
+
+  // Different wrappers return different shapes:
+  // - { data, errors }
+  // - data directly
+  // - Response-like with json()
+  if (resp && typeof resp === "object") {
+    if ("data" in resp) return (resp as any).data;
+    if ("json" in resp && typeof (resp as any).json === "function") {
+      const j = await (resp as any).json();
+      return j?.data ?? j;
+    }
+  }
+
+  return resp;
+}
+
 export async function loader({ request }: { request: Request }) {
   try {
     const url = new URL(request.url);
@@ -60,9 +115,6 @@ export async function loader({ request }: { request: Request }) {
       });
     }
 
-    // ✅ Option 2: use your new helper from shopify.server.ts
-    const storefront = unauthenticatedStorefrontClient(shopDomain);
-
     // ---- filters
     const vendor = url.searchParams.get("vendor");
     const tag = url.searchParams.get("tag");
@@ -82,18 +134,21 @@ export async function loader({ request }: { request: Request }) {
     if (minN != null && Number.isFinite(minN)) terms.push(`price:>=${minN}`);
     if (maxN != null && Number.isFinite(maxN)) terms.push(`price:<=${maxN}`);
 
-    const query = terms.length ? terms.join(" ") : null;
+    const queryStr = terms.length ? terms.join(" ") : null;
 
     // ✅ IMPORTANT: /collections/all is not a real collection handle in APIs
     let products: any[] = [];
     if (collectionHandle === "all") {
-      const data = await storefront.query(ALL_PRODUCTS_QUERY, {
-        variables: { first: 250, query },
+      const data: any = await runStorefrontGraphQL(shopDomain, ALL_PRODUCTS_QUERY, {
+        first: 250,
+        query: queryStr,
       });
       products = data?.products?.nodes ?? [];
     } else {
-      const data = await storefront.query(PRODUCTS_IN_COLLECTION_QUERY, {
-        variables: { collectionHandle, first: 250, query },
+      const data: any = await runStorefrontGraphQL(shopDomain, PRODUCTS_IN_COLLECTION_QUERY, {
+        collectionHandle,
+        first: 250,
+        query: queryStr,
       });
       products = data?.collection?.products?.nodes ?? [];
     }
@@ -132,7 +187,7 @@ export async function loader({ request }: { request: Request }) {
       if (wantedColor) match = match && hasOptionValue(options, ["color", "colour"], wantedColor);
       if (wantedSize) match = match && hasOptionValue(options, ["size"], wantedSize);
 
-      if (match) filteredHandles.push(p.handle);
+      if (match && p.handle) filteredHandles.push(String(p.handle));
     }
 
     const facets = {
@@ -145,9 +200,14 @@ export async function loader({ request }: { request: Request }) {
 
     return okJson({
       ok: true,
-      marker: "FILTER_HANDLES_OK_V4_DEPLOYTEST_01",
+      marker: "FILTER_HANDLES_OK_V4_DEPLOYTEST_02",
       shop: shopDomain,
       collectionHandle,
+      debug: {
+        productsCount: products.length,
+        usedQuery: queryStr,
+        mode: collectionHandle === "all" ? "all-products" : "collection",
+      },
       facets,
 
       // legacy keys
